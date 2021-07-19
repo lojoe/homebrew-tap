@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+
+#:  * `refresh` [<options>]
+#:
+#:  Update Homebrew and upgrade any out-of-date installed formulae.
+#:
+#:  This command duplicates the functionality of `brew update` followed by
+#:  `brew upgrade` while providing a more concise output and capturing the
+#:  detail from each command in a run log in the user's home directory for
+#:  later reference when needed.
+#:
+#:  A check is made to determine whether or not the command is running on
+#:  Apple Silicon under Rosetta 2 emulation and, if so, the run log will be
+#:  named `.brew64-refresh.log`; in all other cases the name will be
+#:  `.brew-refresh.log`. The assumption is that the native installation
+#:  of Homebrew is invoked with `brew` and that an alias similar to the one
+#:  below was created to invoke a legacy installation to manage formulae that
+#:  do not yet support the M1 processor.
+#:
+#:    alias brew64='arch -x86_64 /usr/local/bin/brew'
+#:
+#:  `Options:`
+#:
+#:    `-q` | `--quiet`       suppress all output except upgrade prompt
+#:    `-y` | `--yes`         suppress prompt to upgrade installed formulae
+
+set -e
+shopt -s extglob
+
+# Display message and exit with exit code (default: 1)
+# usage: die [-<N>] [<text>]
+die() {
+	local -i exit_code=1
+	[[ "$1" == -* ]] && exit_code=${1#-} && shift
+	[[ ${exit_code} -eq 0 ]] || printf "[ERROR] "
+	[[ "$*" ]] && printf "%s\n" "$*"
+	exit "${exit_code}"
+}
+
+# Pad a specific character a number of times (default: ' ')
+# usage: pad <length> [<character>]
+pad() {
+	printf "%*s" "$1" ' ' | tr ' ' "${2- }"
+}
+
+# Countdown timer with visible console output
+# usage: countdown <seconds>
+countdown() {
+	local -i remaining=$1
+	local -i length
+	while [[ ${remaining} -ge 0 ]]; do
+		printf "%s" "${remaining}"
+		length=${#remaining}
+		sleep 1
+		printf "%s" "$(pad "${length}" '\b')"
+		remaining=$((remaining - 1))
+	done
+}
+
+# Detect Apple Silicon and Rosetta emulation status
+# usage: apple_silicon [option]
+apple_silicon() {
+	local -i show_arch=1
+	local -i show_emulation=1
+	local -i apple_m1=0
+	local -i emulation=0
+	case $1 in
+	-a | --arch)
+		show_emulation=0
+		;;
+	-e | --emul | --emulation)
+		show_arch=0
+		;;
+	*)
+		die "apple_silicon: unrecognized option \"$1\""
+		;;
+	esac
+
+	if brand_name=$(sysctl -n machdep.cpu.brand_string 2>/dev/null); then
+		[[ "${brand_name}" == "Apple M1" ]] && apple_m1=1
+	fi
+	if [[ ${show_arch} -eq 1 ]]; then
+		printf "%s" "${apple_m1}"
+		[[ ${show_emulation} -eq 1 ]] && printf " "
+	fi
+
+	if [[ ${show_emulation} -eq 1 ]]; then
+		if [[ ${apple_m1} -eq 1 ]]; then
+			if [[ "$(sysctl -n sysctl.proc_translated)" -eq 1 ]]; then
+				emulation=1
+			fi
+		fi
+		printf "%s" "${emulation}"
+	fi
+
+	printf "\n"
+}
+
+# Setup or write capture file for output logging
+# usage: capture [options] [<text>]
+#
+# example:
+#   capture -o foobar.log --trunc
+#   capture -t "> cal 2000"
+#   cal 2000 | capture -
+capture() {
+	local quiet
+	local stdin
+	local timestamp
+	timestamp="$(date)"
+
+	while [[ "$1" == -* ]]; do
+		case $1 in
+		-b | --banner) # print banner line in capture file only
+			[[ "${BREW_CAPTURE}" ]] &&
+				printf "%s\n" "$(pad 79 "#")" >>"${BREW_CAPTURE}"
+			;;
+
+		-q | --quiet) # capture output only; do not write to stdout
+			quiet=1
+			;;
+
+		-o | --output) # set capture output file
+			BREW_CAPTURE="$2"
+			shift
+			;;
+
+		--trunc | --truncate) # truncate capture file
+			[[ "${BREW_CAPTURE}" ]] &&
+				cat /dev/null >"${BREW_CAPTURE}"
+			;;
+
+		-t | --timestamp) # prefix text with timestamp (in capture file only)
+			[[ "${BREW_CAPTURE}" ]] &&
+				printf "[%s] " "${timestamp}" >>"${BREW_CAPTURE}"
+			;;
+
+		-) # capture stdin
+			stdin=1
+			;;
+
+		*)
+			die "capture: unrecognized option \"$1\""
+			;;
+		esac
+		shift
+	done
+
+	if [[ "$*" ]]; then
+		[[ ! "${quiet}" ]] && printf "%s\n" "$*"
+		[[ "${BREW_CAPTURE}" ]] &&
+			printf "%s\n" "$*" >>"${BREW_CAPTURE}"
+	fi
+
+	if [[ "${stdin}" ]]; then # redirect stdin to capture file
+		if [[ ! "${quiet}" ]]; then
+			tee -a "${BREW_CAPTURE}"
+		else
+			tee -a "${BREW_CAPTURE}" >/dev/null
+		fi
+	fi
+}
+
+###############################################################################
+
+while [[ $1 == -* ]]; do
+	case $1 in
+	-q | --quiet)
+		QUIET='-q'
+		;;
+
+	-y | --yes)
+		YES=1
+		;;
+
+	-qy | -yq)
+		QUIET='-q'
+		YES=1
+		;;
+
+	*)
+		die "usage: ${BREW_PREFIX} refresh [-y|--yes] [-q|--quiet]"
+		;;
+	esac
+	shift
+done
+
+[[ "$(apple_silicon -e)" -eq 1 ]] && BREW_PREFIX="brew64" || BREW_PREFIX="brew"
+BREW_CAPTURE="${HOME}/.${BREW_PREFIX}-refresh.log"
+capture --truncate
+
+[[ ! "${QUIET}" ]] && printf "\nRun log can be found in %s\n\n" "${BREW_CAPTURE}"
+capture ${QUIET} -b -t "Updating Homebrew formulae..."
+${HOMEBREW_BREW_FILE} update 2>&1 | capture -q -t - "> ${HOMEBREW_BREW_FILE} update"
+
+outdated=$(${HOMEBREW_BREW_FILE} outdated | wc -l | tr -d ' ')
+if [[ ${outdated} -eq 0 ]]; then
+	capture ${QUIET} -b -t "All installed formulae are upto date"
+	exit
+fi
+
+"${HOMEBREW_BREW_FILE}" outdated | capture ${QUIET} -b -t - "These installed formulae need to be upgraded"
+if [[ ! "${YES}" ]]; then
+	printf "\nPress <CTRL-C> now to cancel Homebrew upgrade step... "
+	countdown 5
+	printf "\n"
+fi
+
+capture ${QUIET} -b -t "Upgrading ${outdated} formulae..."
+"${HOMEBREW_BREW_FILE}" upgrade | capture -q -t - "> ${HOMEBREW_BREW_FILE} upgrade"
+
+capture ${QUIET} -b -t "Command execution complete"
+[[ ! "${QUIET}" ]] && printf "\n"
