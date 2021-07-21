@@ -1,16 +1,17 @@
+[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/lojoe/homebrew-tap/master.svg)](https://results.pre-commit.ci/latest/github/lojoe/homebrew-tap/master)
+
 # homebrew-tap
+
 Homebrew formula for my stuff and other stuff I like that's not already in a tap
 
 
-## Using my tap
+## Installation
 
-First, you need to have [Homebrew](http://brew.sh) installed on your Mac.
-
-Then, you can add my tap and install one or more formula:
+This tap is kind of useless without [Homebrew](https://brew.sh), so go
+get that if you have not done so already.
 
 ```bash
 brew tap lojoe/tap
-brew install git-web
 ```
 
-It's that easy!
+## Usage
